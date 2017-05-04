@@ -23,6 +23,9 @@ repositories {
 
 dependencies {
     compile "org.apereo.cas:cas-server-webapp:${project.'cas.version'}@war"
+    compile "org.apereo.cas:cas-server-support-jdbc:${project.'cas.version'}"
+    compile "org.apereo.cas:cas-server-support-token-webflow:${project.'cas.version'}"
+    compile "org.apereo.cas:cas-server-support-rest:${project.'cas.version'}"
 }
 
 task copyConfig(type: Copy) {

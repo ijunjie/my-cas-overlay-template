@@ -1,0 +1,345 @@
+CAS 部署
+
+准备工作：
+在centos部署cas 5.0.x
+编辑hosts 增加 127.0.0.1   cas.h3cloudos.com
+
+https://apereo.github.io/cas/5.0.x/installation/Configuration-Properties.html
+
+
+一、证书
+======================================================
+使用jdk自带的工具keytool
+
+1. 在/etc/cas下(因为build cas overlay时候要从该位置下找keystore)，创建一条证书记录，保存到./thekeystore 别名为caskeystore
+
+  keytool -genkey -alias caskeystore -keypass changeit -keyalg RSA -keystore thekeystore
+
+一条证书记录信息包含该条证书的私钥，公钥和对应的数字证书的信息。
+
+输入firstname和lastname时，要输入域名：如cas.xxx.com
+
+2. 导出数字证书
+数字证书包含三部分信息：
+  证书元数据信息，序列号，过期时间等；
+  所有者信息，姓名、地区等；
+  所有者公钥；相比于在keystore中的信息，没有所有者的密钥，所有者的密钥只有所有者自己知道，而此处的数字证书是要分发到公网上的。
+
+  keytool -export -alias caskeystore  -keystore thekeystore -rfc -file export.crt
+
+
+3. 将数字证书导入jdk.  
+keytool -import -keystore {jdk.../}cacerts -file export.crt
+
+在centos 7, cacerts的路径为/etc/pki/ca-trust/extracted/java/cacerts
+
+4. keytool其他用法：
+keytool -list -keystore {jdk.../}cacerts
+
+删除
+keytool -delete -alias thekeystore -keystore cacerts
+
+5. 备注：
+数字证书的生成，分发，使用，可以放到三台机器上，
+A机器用于生成证书，作为CA，
+将A生成的数字证书导入B机器上的JRE，在B机器上的tomcat中配置（下面提到tomcat的HTTPS配置），
+在C机器上的浏览器访问B机器的tomcat，下载证书，将数字证书导入到本机的受信任的根目录证书。
+
+=======================================================
+
+二、cas-gradle-overlay
+
+下载cas-gradle-overlay
+
+1. etc配置
+etc下的会在build过程中拷贝到操作系统的/etc/下
+修改配etc/cas/config/cas.properties
+
+cas.server.name: https://cas.h3cloudos.com:8443
+cas.server.prefix: https://cas.h3cloudos.com:8443/cas
+
+cas.adminPagesSecurity.ip=127\.0\.0\.1
+
+logging.config: file:/etc/cas/config/log4j2.xml
+# cas.serviceRegistry.config.location: classpath:/services
+
+修改etc/cas/config/log4j2.xml：
+...name="org.apereo" level="debug"
+
+2. 下载gradle到gradle/wrapper/下
+修改gradle/wrapper/gradle-wrapper.properties
+distributionUrl=gradle-3.2.1-bin.zip
+
+三、移除联网资源访问，提高访问速度
+
+
+执行./gradlew clean build之后，在cas/build/libs下生成war包
+解压后找到WEB-INF/classes
+下面的内容是可以覆盖的。需要覆盖的内容复制到cas/src/main/resources下即可。
+
+查看解压后的WEB-INF/classes下的static和template内容发现，需要访问在线的很多js和css资源
+导致载入速度很慢。
+
+因此可以在static下新建dlc目录，将所需资源全部下载到其中，修改template中的在线资源引用。
+例如：template下的layout.html中的js引用，修改为
+    <script type="text/javascript" th:src="@{/dlc/cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.3.0/zxcvbn.js}"></script>
+
+	
+定制界面
+--添加并修改fragments/logo.html
+--添加并修改fragments/footer.html
+
+--添加并修改casLoginView.html
+
+
+四、数据库认证配置
+1. 增加依赖
+cas/build.gradle添加
+compile "org.apereo.cas:cas-server-support-jdbc:${project.'cas.version'}"
+
+2. 以mysql为例
+
+新建castest库和t_admin_user表
+CREATE TABLE `t_admin_user` (
+	`id` BIGINT(20) NOT NULL AUTO_INCREMENT,
+	`email` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	`login_name` VARCHAR(255) NOT NULL COLLATE 'utf8_bin',
+	`name` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	`password` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	PRIMARY KEY (`id`),
+	UNIQUE INDEX `login_name` (`login_name`)
+)
+
+2. 配置
+默认用户名和密码配置在application.properties里
+改用数据库认证要先注释掉
+注释掉才能merge而不是删掉
+
+服务器存储BCRYPT加密后的值
+
+##
+# CAS Authentication Credentials
+#
+# cas.authn.accept.users=casuser::Mellon
+
+cas.authn.jdbc.query[0].sql=SELECT password FROM t_admin_user WHERE login_name=?
+cas.authn.jdbc.query[0].healthQuery=SELECT 1
+cas.authn.jdbc.query[0].isolateInternalQueries=false
+cas.authn.jdbc.query[0].url=jdbc:mysql://cas.h3cloudos.com:3306/castest?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&autoReconnect=true
+cas.authn.jdbc.query[0].failFast=true
+cas.authn.jdbc.query[0].isolationLevelName=ISOLATION_READ_COMMITTED
+cas.authn.jdbc.query[0].dialect=org.hibernate.dialect.MySQLDialect
+cas.authn.jdbc.query[0].leakThreshold=10
+cas.authn.jdbc.query[0].propagationBehaviorName=PROPAGATION_REQUIRED
+cas.authn.jdbc.query[0].batchSize=1
+cas.authn.jdbc.query[0].user=root
+cas.authn.jdbc.query[0].ddlAuto=create-drop
+cas.authn.jdbc.query[0].maxAgeDays=180
+cas.authn.jdbc.query[0].password=123456
+cas.authn.jdbc.query[0].autocommit=false
+cas.authn.jdbc.query[0].driverClass=com.mysql.jdbc.Driver
+cas.authn.jdbc.query[0].idleTimeout=5000
+# cas.authn.jdbc.query[0].credentialCriteria=
+
+# cas.authn.jdbc.query[0].passwordEncoder.type=NONE|DEFAULT|STANDARD|BCRYPT
+# cas.authn.jdbc.query[0].passwordEncoder.characterEncoding=
+# cas.authn.jdbc.query[0].passwordEncoder.encodingAlgorithm=
+# cas.authn.jdbc.query[0].passwordEncoder.secret=
+# cas.authn.jdbc.query[0].passwordEncoder.strength=16
+
+# cas.authn.jdbc.query[0].principalTransformation.suffix=
+# cas.authn.jdbc.query[0].principalTransformation.caseConversion=NONE|UPPERCASE|LOWERCASE
+# cas.authn.jdbc.query[0].principalTransformation.prefix=
+
+
+五、LDAP认证
+1. 增加依赖
+cas/build.gradle添加
+compile "org.apereo.cas:cas-server-support-ldap:${project.'cas.version'}"
+
+2. 配置
+# cas.authn.ldap[0].type=AD
+
+# cas.authn.ldap[0].ldapUrl=ldap://10.153.0.61
+# cas.authn.ldap[0].useSsl=false
+# cas.authn.ldap[0].baseDn=OU=corpusers,DC=H3C,DC=huawei-3com,DC=com
+# cas.authn.ldap[0].subtreeSearch=true
+# cas.authn.ldap[0].bindDn=CN=wangjunjiea 10857,OU=RnD,OU=corpusers,DC=H3C,DC=huawei-3com,DC=com
+# cas.authn.ldap[0].bindCredential=mypassword
+
+# cas.authn.ldap[0].dnFormat=CN=%s,OU=RnD,OU=corpusers,DC=H3C,DC=huawei-3com,DC=com
+# cas.authn.ldap[0].principalAttributeId=sAMAccountName
+# cas.authn.ldap[0].principalAttributePassword=userPassword
+
+
+
+
+六、服务注册
+
+1. etc/cas/config/cas.properties
+
+cas.serviceRegistry.config.location: classpath:/services
+
+
+匹配全部应用，仅用作测试
+cas/src/main/resources/services/HTTPSandIMAPS-10000001.json
+
+{
+  "@class" : "org.apereo.cas.services.RegexRegisteredService",
+  "serviceId" : "^(https|imaps|http)://.*",
+  "name" : "HTTPS and IMAPS",
+  "id" : 10000001,
+  "description" : "This service definition authorizes all application urls that support HTTPS and IMAPS protocols.",
+  "evaluationOrder" : 10000
+}
+
+
+2. 增加依赖
+
+compile "org.apereo.cas:cas-server-support-json-service-registry:${project.'cas.version'}"
+
+
+七、返回额外的信息
+https://apereo.github.io/cas/5.0.x/integration/Attribute-Release.html
+
+https://apereo.github.io/cas/5.0.x/installation/Configuring-Principal-Resolution.html
+
+1. 注册服务时选择Attribute Release Policy，参考https://apereo.github.io/cas/5.0.x/integration/Attribute-Release-Policies.html
+以第六步的服务注册为例：
+增加ReturnAll策略
+{
+  "@class" : "org.apereo.cas.services.RegexRegisteredService",
+  "serviceId" : "^(https|imaps|http)://.*",
+  "name" : "HTTPS and IMAPS",
+  "id" : 10000001,
+  "description" : "This service definition authorizes all application urls that support HTTPS and IMAPS protocols.",
+  "evaluationOrder" : 10000,
+  "attributeReleasePolicy" : {
+    "@class" : "org.apereo.cas.services.ReturnAllAttributeReleasePolicy"
+  }
+}
+
+2. 以JDBC为例，增加配置
+https://apereo.github.io/cas/5.0.x/integration/Attribute-Resolution.html
+
+假定有userinfo表，
+
+CREATE TABLE `userinfo` (
+	`id` BIGINT(20) NOT NULL AUTO_INCREMENT,
+	`email` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	`login_name` VARCHAR(255) NOT NULL COLLATE 'utf8_bin',
+	`roles` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	`description` VARCHAR(255) NULL DEFAULT NULL COLLATE 'utf8_bin',
+	PRIMARY KEY (`id`),
+	UNIQUE INDEX `login_name` (`login_name`)
+)
+可以根据登录名查询email,description,roles等信息
+本例中最后配置了三个attribute
+
+cas.authn.attributeRepository.jdbc.singleRow=true
+cas.authn.attributeRepository.jdbc.requireAllAttributes=true
+cas.authn.attributeRepository.jdbc.caseCanonicalization=NONE
+cas.authn.attributeRepository.jdbc.queryType=OR
+
+cas.authn.attributeRepository.jdbc.sql=SELECT * FROM userinfo  WHERE {0}
+cas.authn.attributeRepository.jdbc.username=login_name
+cas.authn.attributeRepository.jdbc.healthQuery=SELECT 1
+cas.authn.attributeRepository.jdbc.isolateInternalQueries=false
+cas.authn.attributeRepository.jdbc.url=jdbc:mysql://cas.h3cloudos.com:3306/castest
+cas.authn.attributeRepository.jdbc.failFast=true
+cas.authn.attributeRepository.jdbc.isolationLevelName=ISOLATION_READ_COMMITTED
+cas.authn.attributeRepository.jdbc.dialect=org.hibernate.dialect.MySQLDialect
+cas.authn.attributeRepository.jdbc.leakThreshold=10
+cas.authn.attributeRepository.jdbc.propagationBehaviorName=PROPAGATION_REQUIRED
+cas.authn.attributeRepository.jdbc.batchSize=1
+cas.authn.attributeRepository.jdbc.user=root
+cas.authn.attributeRepository.jdbc.ddlAuto=update
+cas.authn.attributeRepository.jdbc.password=123456
+cas.authn.attributeRepository.jdbc.autocommit=false
+cas.authn.attributeRepository.jdbc.driverClass=com.mysql.jdbc.Driver
+cas.authn.attributeRepository.jdbc.idleTimeout=5000
+cas.authn.attributeRepository.jdbc.pool.suspension=false
+cas.authn.attributeRepository.jdbc.pool.minSize=6
+cas.authn.attributeRepository.jdbc.pool.maxSize=18
+cas.authn.attributeRepository.jdbc.pool.maxIdleTime=1000
+cas.authn.attributeRepository.jdbc.pool.maxWait=2000
+
+cas.authn.attributeRepository.attributes.email=email
+cas.authn.attributeRepository.attributes.roles=roles
+cas.authn.attributeRepository.attributes.description=description
+
+
+通过pac4j获取的CommonProfile中会包含email,roles和description
+    private List<CommonProfile> getProfiles(final WebContext context) {
+        final ProfileManager manager = new ProfileManager(context);
+        List<CommonProfile> all = manager.getAll(true);
+        all.forEach(e -> {
+            e.getAttributes().forEach((k, v) -> System.out.println("--------: " + k + " : " + v));
+        });
+        return all;
+    }
+
+--------: isFromNewLogin : true
+--------: authenticationDate : 2017-03-28T19:26:04.221+08:00[Asia/Shanghai]
+--------: authenticationMethod : QueryDatabaseAuthenticationHandler
+--------: roles : role1,role2
+--------: successfulAuthenticationHandlers : QueryDatabaseAuthenticationHandler
+--------: description : hellohellohello
+--------: longTermAuthenticationRequestTokenUsed : false
+--------: email : hello@hello.com
+
+
+
+八、CAS Dashboard
+
+https://apereo.github.io/cas/5.0.x/installation/Configuring-Monitoring.html
+https://apereo.github.io/cas/5.0.x/installation/Monitoring-Statistics.html
+
+endpoints.enabled=true
+endpoints.sensitive=true
+management.context-path=/status
+endpoints.restart.enabled=false
+endpoints.shutdown.enabled=false
+
+
+# IP address may be enough to protect all endpoints.
+# If you wish to protect the admin pages via CAS itself, configure the rest.
+cas.adminPagesSecurity.ip=172\.27\.11\.87
+cas.adminPagesSecurity.loginUrl=https://cas.h3cloudos.com:8443/cas/login
+cas.adminPagesSecurity.service=https://cas.h3cloudos.com:8443/cas/status/dashboard
+# cas.adminPagesSecurity.users=file:/etc/cas/config/adminusers.properties
+# cas.adminPagesSecurity.adminRoles=ROLE_ADMIN
+cas.adminPagesSecurity.actuatorEndpointsEnabled=true
+
+
+九、REST Protocol
+https://apereo.github.io/cas/5.0.x/protocol/REST-Protocol.html
+
+
+十、Docker部署
+
+Dockerfile
+
+
+十一、HA
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

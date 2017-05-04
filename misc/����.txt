@@ -1,0 +1,156 @@
+所有场景：
+    X. 首次访问整套CAS应用系统的某个应用
+	Y. 已访问过某个应用，首次访问另一个应用
+	Z. 第二次访问同一应用。
+
+TGC的意义在于表明是否访问过整套web应用
+ST是针对一个web应用的
+
+
+访问受保护资源，AuthenticationFilter首先看请求是否有ST
+    1. 没有ST且session中无信息-- 证明之前没有访问过此应用，POST到/cas/login接口，
+	  CAS Server查看请求是否带有TGC，
+	    A. 有TGC---Y场景。证明该用户之前登录过其他应用但没登录过此应用，
+		    用TGC在CAS Server缓存中查询TGT，查到后则用此TGT签发一个ST, 用户用ST访问web应用，web应用访问cas服务的/serviceValidate 接口
+		    验证通过，就会把用户信息写入web 应用的session 里，并允许访问受保护资源
+		B. 没有TGC------X场景，重定向到CAS登录界面，用户输入密码
+		   POST到/cas/login，如果认证通过，
+		    1.生成TGC写入浏览器 2.将TGC封装成TGT保存到CAS Server 3.用TGT生成ST，保存并传给web应用
+			web应用客户端的AuthenticationFilter 看到ticket 参数后，会跳过，由其后面的TicketValidationFilter处理
+            TicketValidationFilter访问cas 服务的/serviceValidate 接口, 将ticket 、service 都传到此接口，由此接口验证ST的有效性
+			TicketValidationFilter如果得到验证成功的消息，就会把用户信息写入web 应用的session里，并允许访问资源
+	2. 有ST, 如果session有信息，---Z场景，则不去CAS认证。
+
+
+
+	
+	
+	
+CAS的相关接口和处理逻辑
+Ticket介绍
+概念介绍
+CAS的核心就是其Ticket，及其在Ticket之上的一系列处理操作。CAS的主要票据有TGT、ST、PGT、PGTIOU、PT，其中TGT、ST是CAS1.0协议中就有的票据，PGT、PGTIOU、PT是CAS2.0协议中有的票据。
+
+TGT（Ticket Grangting Ticket）
+TGT是CAS为用户签发的登录票据，拥有了TGT，用户就可以证明自己在CAS成功登录过。TGT封装了Cookie值以及此Cookie值对应的用户信息。用户在CAS认证成功后，CAS生成cookie，写入浏览器，同时生成一个TGT对象，放入自己的缓存，TGT对象的ID就是cookie的值。当HTTP再次请求到来时，如果传过来的有CAS生成的cookie，则CAS以此cookie值为key查询缓存中有无TGT ，如果有的话，则说明用户之前登录过，如果没有，则用户需要重新登录。
+
+ 
+ST（Service Ticket）
+ST是CAS为用户签发的访问某一service的票据。用户访问service时，service发现用户没有ST，则要求用户去CAS获取ST。用户向CAS发出获取ST的请求，如果用户的请求中包含cookie，则CAS会以此cookie值为key查询缓存中有无TGT，如果存在TGT，则用此TGT签发一个ST，返回给用户。用户凭借ST去访问service，service拿ST去CAS验证，验证通过后，允许用户访问资源。
+
+ 
+PGT（Proxy Granting Ticket）
+Proxy Service的代理凭据。用户通过CAS成功登录某一Proxy Service后，CAS生成一个PGT对象，缓存在CAS本地，同时将PGT的值（一个UUID字符串）回传给Proxy Service，并保存在Proxy Service里。Proxy Service拿到PGT后，就可以为Target Service（back-end service）做代理，为其申请PT。
+
+ 
+PGTIOU（Proxy Granting Ticket IOU）
+PGTIOU是CAS协议中定义的一种附加票据，它增强了传输、获取PGT的安全性。
+PGT的传输与获取的过程：Proxy Service调用CAS的serviceValidate接口验证ST成功后，CAS首先会访问pgtUrl指向的https url，将生成的 PGT及PGTIOU传输给proxy service，proxy service会以PGTIOU为key，PGT为value，将其存储在Map中；然后CAS会生成验证ST成功的xml消息，返回给Proxy Service，xml消息中含有PGTIOU，proxy service收到Xml消息后，会从中解析出PGTIOU的值，然后以其为key，在map中找出PGT的值，赋值给代表用户信息的Assertion对象的pgtId，同时在map中将其删除。
+
+ 
+PT（Proxy Ticket）
+PT是用户访问Target Service（back-end service）的票据。如果用户访问的是一个Web应用，则Web应用会要求浏览器提供ST，浏览器就会用cookie去CAS获取一个ST，然后就可以访问这个Web应用了。如果用户访问的不是一个Web应用，而是一个C/S结构的应用，因为C/S结构的应用得不到cookie，所以用户不能自己去CAS获取ST，而是通过访问proxy service的接口，凭借proxy service的PGT去获取一个PT，然后才能访问到此应用。
+
+
+
+第一步：GET请求受保护资源，返回302，重定向到cas登录页面
+
+访问受保护资源 http://localhost:8088/cas/index.html
+
+返回302
+
+响应消息中，有几个header需要关注
+1. 
+Location:https://cas.h3cloudos.com:8443/cas/login?service=http%3A%2F%2Flocalhost%3A8088%2Fcallback%3Fclient_name%3DCasClient
+
+decode后：https://cas.h3cloudos.com:8443/cas/login?service=http://localhost:8088/callback?client_name=CasClient
+
+
+这是GET请求，展示CAS登录页面，可以输入用户名密码认证。
+
+
+
+
+第二步：cas登录页面输入用户民密码，发送POST请求，返回302，重定向到callback
+
+
+输入用户密码，点击确定，发送POST请求
+请求URL:https://cas.h3cloudos.com:8443/cas/login?service=http://localhost:8088/callback?client_name=CasClient
+请求头中：
+Referer:https://cas.h3cloudos.com:8443/cas/login?service=http%3A%2F%2Flocalhost%3A8088%2Fcallback%3Fclient_name%3DCasClient
+表示是从cas的登录界面登录
+
+响应：302
+Location:
+http://localhost:8088/callback?client_name=CasClient&ticket=ST-3-YQwbCErcdLU2Lf5I1tqH-greenvm-w10857v6
+Set-Cookie:"TGC=eyJhbGciOiJIUzUxMiJ9.WlhsS2FHSkhZMmxQYVVwcllWaEphVXhEU214aWJVMXBUMmxLUWsxVVNUUlJNRXBFVEZWb1ZFMXFWVEpKYmpBdUxuRmZhelZCV1RsUFgxSnZUV1UzT1dkd1lXSk9SVkV1TVdRMU9Xc3RURXBOZURCZmFtaGZTRWhsU0UxWE5XVlpjVlZwTm5ob2NGODNVemRqV0hCNmFuQkdlREU0YjFWNE9EWlRiRGcyWlc5Ull6ZFpaR3BpTlRaZlRsaGhha2RJY1Zsd1NuQlRTRkJRVldJMVdqSlhVRTFPUlVkdFRHdzJRMmRFTlRNeU5HNDROakYxTlcxWmMzTlBhR05SYjFCSlRESXlUV0pDUmtwclpWUXdOalZhUldGRWJHdERXVXQ0VlU5V2FsTjVRV3N5UzFSNlZrTXROMmRaVGtGUVNreENSbHBMWVc4eVlpMVpaVFJWYjBjeGJUaGFNVWRTWlVKMFdIQjRTbEpyWWtaS1dtWlNNSGhhUVUxb1JYSjFlRlJrV25Wa09HRmxWVkZyUTFjd1JFWjVlbWRhT0M1TlpsaHNaVEpmU2xCQmJXa3pTM0poYVVJMlFUWlI.wugAxxGRW1VQBVaorBkwv74L-t5idA0SlzNll6T4X4Svd_YpaWlcDjOUhe3d-JstVrtJ95PNECN78k3P4XTaKQ;path=/cas/;Secure"
+
+X-Application-Context:"cas:native:8443"
+
+
+
+认证成功后，CAS 服务器会生成认证cookie(TGC) ，写入浏览器，同时将cookie封装成TGT缓存到服务器本地.TGC的意义在于标识用户是否已登录
+并且根据service 参数生成ST,ST会保存到服务器，也会加在url 后面
+
+
+第三步：请求callback，带有ST参数，返回302，重定向到资源地址。
+
+http://localhost:8088/callback?client_name=CasClient&ticket=ST-3-YQwbCErcdLU2Lf5I1tqH-greenvm-w10857v6
+
+这时客户端的AuthenticationFilter 看到ticket 参数后，会跳过，由其后面的TicketValidationFilter 处理
+TicketValidationFilter会利用httpclient 工具访问cas 服务的/serviceValidate 接口, 将ticket 、service 都传到此接口，由此接口验证ticket的有效性
+TicketValidationFilter 如果得到验证成功的消息，就会把用户信息写入web 应用的session 里
+用户在同一浏览器里访问此web 应用时，AuthenticationFilter 会在session 里读取到用户信息，所以就不会去CAS 认证
+
+响应：302
+Location:http://localhost:8088/cas/index.html
+
+
+
+
+
+
+这时候我们访问另一个应用的受保护资源
+http://localhost:8089/cas/index.html
+
+在此浏览器里访问别的web 应用时，AuthenticationFilter在session 里读取不到用户信息,会去CAS 的login 接口认证
+**但这时CAS 会读取到浏览器传来的cookie**
+所以CAS 不会要求用户去登录页面登录，只是会根据service参数生成一个ST 
+然后再和web 应用做一个验证ticket 的交互而已
+
+返回302，重定向到
+http://localhost:8089/callback?client_name=CasClient&ticket=ST-4-yQEVtoz5sLAJQsIHrITl-greenvm-w10857v6
+
+可以看到生成了新的ST
+
+
+
+
+
+BTW 安全相关响应Header
+
+
+X-Content-Type-Options:"nosniff" 浏览器过于智能化会带来安全问题。如一个响应内容中包含js代码，Content-Type为image/png，但浏览器会推断出是脚本并执行。
+这个响应告诉浏览器要严格按照响应中的Content-Type来解析内容。
+
+
+X-Frame-Options:"DENY"    防止点击劫持攻击，告知浏览器不要将响应中的内容在HTML Frame中显示出来。
+
+x-xss-protection:"1; mode=block"
+
+跨站脚本漏洞(Cross-Site Scripting) 最佳办法是对输出的数据进行正确的编码。
+除此之外，现代浏览器也自带了防御XSS的能力。只需在响应中加入x-xss-protection:"1; mode=block"即可。
+1表示开启浏览器防御XSS功能；mode=block表示发现XSS攻击时直接屏蔽即将渲染的内容
+
+
+
+
+
+
+
+
+
+
+
+
+
